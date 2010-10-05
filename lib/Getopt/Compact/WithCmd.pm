@@ -6,7 +6,7 @@ use 5.008_001;
 use Getopt::Long qw/GetOptionsFromArray/;
 use constant DEFAULT_CONFIG => (no_auto_abbrev => 1, bundling => 1);
 
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 
 sub new {
     my ($class, %args) = @_;
@@ -31,27 +31,24 @@ sub new {
     my @gconf = grep $config{$_}, keys %config;
     Getopt::Long::Configure(@gconf) if @gconf;
 
-    if (my $command_struct = $args{command_struct}) {
-        for my $key (keys %$command_struct) {
-            $self->{summary}{$key} = $command_struct->{$key}->{desc} || '';
-        }
-    }
+    $self->_init_summary($args{command_struct});
 
     if (my $global_struct = $args{global_struct}) {
         $self->_init_struct($global_struct);
         my $opthash = $self->_parse_struct;
 
-        my @gopts;
-        while (@ARGV) {
-            last unless $ARGV[0] =~ /^-/;
-            push @gopts, shift @ARGV;
+        if ($args{command_struct}) {
+            if (my @gopts = $self->_parse_argv) {
+                $self->{ret} = $self->_parse_option(\@gopts, $opthash) ? 1 : 0;
+                return $self unless $self->{ret};
+            }
+            return $self unless $self->_check_requires;
         }
-
-        if (@gopts) {
-            $self->{ret} = $self->_parse_option(\@gopts, $opthash) ? 1 : 0;
-            return $self unless $self->{ret};
+        else {
+            $self->{ret} = $self->_parse_option(\@ARGV, $opthash) ? 1 : 0;
+            $self->_check_requires;
+            return $self;
         }
-        return $self unless $self->_check_requires;
     }
 
     my $command_struct = $args{command_struct} || {};
@@ -199,6 +196,15 @@ sub _parse_option {
     return GetOptionsFromArray($argv, %$opthash) ? 1 : 0;
 }
 
+sub _parse_argv {
+    my @opts;
+    while (@ARGV) {
+        last unless $ARGV[0] =~ /^-/;
+        push @opts, shift @ARGV;
+    }
+    return @opts;
+}
+
 sub _parse_struct {
     my ($self) = @_;
     my $struct = $self->{struct};
@@ -238,6 +244,18 @@ sub _init_struct {
 
     unshift @{$self->{struct}}, [[qw(h help)], qq(this help message)]
         if $self->{usage} && !$self->_has_option('help');
+}
+
+sub _init_summary {
+    my ($self, $command_struct) = @_;
+    if ($command_struct) {
+        for my $key (keys %$command_struct) {
+            $self->{summary}{$key} = $command_struct->{$key}->{desc} || '';
+        }
+    }
+    else {
+        $self->{summary} = {};
+    }
 }
 
 sub _extends_usage {

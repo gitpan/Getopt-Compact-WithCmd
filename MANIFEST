@@ -25,7 +25,9 @@ t/private/check_requires.t
 t/private/extends_usage.t
 t/private/has_option.t
 t/private/init_struct.t
+t/private/init_summary.t
 t/private/option_names.t
+t/private/parse_argv.t
 t/private/parse_option.t
 t/private/parse_struct.t
 xt/01_podspell.t
