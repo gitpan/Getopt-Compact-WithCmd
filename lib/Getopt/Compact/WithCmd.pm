@@ -6,7 +6,7 @@ use 5.008_001;
 use Getopt::Long qw/GetOptionsFromArray/;
 use constant DEFAULT_CONFIG => (no_auto_abbrev => 1, bundling => 1);
 
-our $VERSION = '0.08';
+our $VERSION = '0.09';
 
 sub new {
     my ($class, %args) = @_;
@@ -171,7 +171,7 @@ sub _parse_command_struct {
     my $command_map = { map { $_ => 1 } keys %$command_struct };
     my $command = shift @ARGV;
     unless ($command) {
-        $self->{ret} = 1;
+        $self->{ret} = $self->_check_requires;
         return $self;
     }
 
