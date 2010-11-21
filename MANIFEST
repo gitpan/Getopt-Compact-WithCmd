@@ -21,6 +21,7 @@ t/00_compile.t
 t/01_new.t
 t/02_usage.t
 t/03_opts.t
+t/04_new_from_array.t
 t/private/check_requires.t
 t/private/extends_usage.t
 t/private/has_option.t

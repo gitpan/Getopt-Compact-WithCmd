@@ -6,7 +6,7 @@ use 5.008_001;
 use Getopt::Long qw/GetOptionsFromArray/;
 use constant DEFAULT_CONFIG => (no_auto_abbrev => 1, bundling => 1);
 
-our $VERSION = '0.10';
+our $VERSION = '0.11';
 
 sub new {
     my ($class, %args) = @_;
@@ -60,6 +60,16 @@ sub new {
     return $self;
 }
 
+sub new_from_array {
+    my ($class, $args, %options) = @_;
+    unless (ref $args eq 'ARRAY') {
+        require Carp;
+        Carp::croak("Usage: $class->new_from_array(\\\@args, %options)");
+    }
+    local @ARGV = @$args;
+    return $class->new(%options);
+}
+
 sub command    { $_[0]->{command}  }
 sub commands   { $_[0]->{commands} }
 sub status     { $_[0]->{ret}      }
@@ -78,13 +88,14 @@ sub opts {
 }
 
 sub usage {
-    my($self) = @_;
+    my($self, $command) = @_;
     my $usage = "";
     my(@help, @commands);
 
-    if (defined $self->command && $self->command eq 'help') {
+    if ((defined $self->command && $self->command eq 'help') || defined $command) {
         delete $self->{command};
-        if (defined(my $target = $ARGV[0])) {
+        my $target;
+        if (defined($target = $self->{_argv}[0]) || defined($target = $command)) {
             unless (ref $self->{_struct}{$target} eq 'HASH') {
                 $self->{error} = "Unknown command: $target";
             }
@@ -134,7 +145,10 @@ sub usage {
         $usage .= Text::Table->new($sep, '', $sep, '')->load(@help)->stringify."\n";
     }
 
-    $usage .= "$other_usage\n\n" if defined $other_usage && length $other_usage > 0;
+    if (defined $other_usage && length $other_usage > 0) {
+        $other_usage =~ s/\n$//ms;
+        $usage .= "$other_usage\n\n";
+    }
 
     if (!$self->command || $self->{has_sub_command}) {
         for my $command (sort keys %$summary) {
@@ -159,8 +173,8 @@ sub usage {
 }
 
 sub show_usage {
-    my ($self) = @_;
-    print $self->usage;
+    my $self = shift;
+    print $self->usage(@_);
     exit !$self->status;
 }
 
@@ -249,7 +263,9 @@ sub _parse_option {
         $self->{error} = join '', @_;
         chomp $self->{error};
     };
-    return GetOptionsFromArray($argv, %$opthash) ? 1 : 0;
+    my $ret = GetOptionsFromArray($argv, %$opthash) ? 1 : 0;
+    $self->{_argv} = \@ARGV;
+    return $ret;
 }
 
 sub _parse_argv {
@@ -563,6 +579,12 @@ support nesting.
 
 =back
 
+=head2 new_from_array(\@myopts, %args);
+
+C<new_from_array> can be used to parse options from an arbitrary array.
+
+  $go = Getopt::Compact::With->new_from_array(\@myopts, ...);
+
 =head2 opts
 
 Returns a hashref of options keyed by option name.
@@ -604,12 +626,14 @@ Alias of C<status>
 Gets usage message.
 
   my $message = $go->usage;
+  my $message = $go->usage($target_command_name); # must be implemented command.
 
 =head2 show_usage
 
 Display usage message and exit.
 
   $go->show_usage;
+  $go->show_usage($target_command_name);
 
 =head2 pod2usage
 
