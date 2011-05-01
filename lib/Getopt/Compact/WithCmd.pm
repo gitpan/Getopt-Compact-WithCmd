@@ -3,10 +3,12 @@ package Getopt::Compact::WithCmd;
 use strict;
 use warnings;
 use 5.008_001;
+use Data::Dumper ();
+use List::Util qw(max);
 use Getopt::Long qw/GetOptionsFromArray/;
 use constant DEFAULT_CONFIG => (no_auto_abbrev => 1, bundling => 1);
 
-our $VERSION = '0.13';
+our $VERSION = '0.14';
 
 sub new {
     my ($class, %args) = @_;
@@ -90,7 +92,7 @@ sub opts {
 
 sub usage {
     my($self, @targets) = @_;
-    my $usage = "";
+    my $usage = '';
     my(@help, @commands);
 
     if ((defined $self->command && $self->command eq 'help') || @targets) {
@@ -141,20 +143,29 @@ sub usage {
     $usage .= ($args ? " $args" : '') . "\n\n";
 
     for my $o (@$struct) {
-        my($opts, $desc) = @$o;
-        next unless defined $desc;
-        my @onames = $self->_option_names($opts);
+        my ($name_spec, $desc, $arg_spec, $dist, $opts) = @$o;
+        $desc = '' unless defined $desc;
+        my @onames = $self->_option_names($name_spec);
         my $optname = join
             (', ', map { (length($_) > 1 ? '--' : '-').$_ } @onames);
-        $optname = "    ".$optname unless length($onames[0]) == 1;
-        push @help, [ $optname, ucfirst($desc) ];
+        $optname = '    '.$optname unless length($onames[0]) == 1;
+        my $info = do {
+            local $Data::Dumper::Indent = 0;
+            local $Data::Dumper::Terse  = 1;
+            my $info = [];
+            push @$info, $arg_spec                ? $self->_opt_spec2name($arg_spec): '';
+            push @$info, $opts->{required}        ? "(required)" : '';
+            push @$info, defined $opts->{default} ? "(default: ".Data::Dumper::Dumper($opts->{default}).")" : '';
+            $info;
+        };
+        push @help, [ $optname, $info, ucfirst($desc) ];
     }
 
     if (@help) {
         require Text::Table;
         my $sep = \'   ';
         $usage .= "options:\n";
-        $usage .= Text::Table->new($sep, '', $sep, '')->load(@help)->stringify."\n";
+        $usage .= Text::Table->new($sep, '', $sep, '', $sep, '')->load($self->_format_info(@help))->stringify."\n";
     }
 
     if (defined $other_usage && length $other_usage > 0) {
@@ -188,6 +199,50 @@ sub show_usage {
     my $self = shift;
     print $self->usage(@_);
     exit !$self->status;
+}
+
+sub _opt_spec2name {
+    my ($self, $spec) = @_;
+    my $name = '';
+    my ($type, $dest) = $spec =~ /^[=:]?([!+isof])([@%])?/;
+    if ($type) {
+        $name =
+            $type eq '!' ? 'Bool'   :
+            $type eq '+' ? 'Incr'   :
+            $type eq 's' ? 'Str'    :
+            $type eq 'i' ? 'Int'    :
+            $type eq 'o' ? 'ExtInt' :
+            $type eq 'f' ? 'Number' : '';
+    }
+    if ($dest) {
+        $name .= $dest eq '@' ? ':Array' : $dest eq '%' ? ':Hash' : '';
+    }
+    return $name;
+}
+
+sub _format_info {
+    my ($self, @help) = @_;
+
+    my $type_max     = 0;
+    my $required_max = 0;
+    my $default_max  = 0;
+    for my $row (@help) {
+        my ($type, $required, $default) = @{$row->[1]};
+        $type_max     = max $type_max, length($type);
+        $required_max = max $required_max, length($required);
+        $default_max  = max $default_max, length($default);
+    }
+
+    for my $row (@help) {
+        my ($type, $required, $default) = @{$row->[1]};
+        my $parts = [];
+        for my $stuff ([$type_max, $type], [$required_max, $required], [$default_max, $default]) {
+            push @$parts, sprintf '%-*s', @$stuff if $stuff->[0] > 0;
+        }
+        $row->[1] = join ' ', @$parts;
+    }
+
+    return @help;
 }
 
 sub _parse_command_struct {
@@ -346,7 +401,7 @@ sub _parse_struct {
 
 sub _init_struct {
     my ($self, $struct) = @_;
-    $self->{struct} = ref $struct eq 'ARRAY' ? $struct : [];
+    $self->{struct} = ref $struct eq 'ARRAY' ? $struct : ref $struct eq 'HASH' ? $self->_normalize_struct($struct) : [];
 
     if (ref $self->{modes} eq 'ARRAY') {
         my @modeopt;
@@ -360,6 +415,25 @@ sub _init_struct {
 
     unshift @{$self->{struct}}, [[qw(h help)], qq(this help message)]
         if $self->{usage} && !$self->_has_option('help');
+}
+
+sub _normalize_struct {
+    my ($self, $struct) = @_;
+
+    my $result = [];
+    for my $option (keys %$struct) {
+        my $data = $struct->{$option} || {};
+        $data = ref $data eq 'HASH' ? $data : {};
+        my $row = [];
+        push @$row, [$option, ref $data->{alias} ? @{$data->{alias}} : ()];
+        push @$row, $data->{desc};
+        push @$row, $data->{type};
+        push @$row, $data->{dest};
+        push @$row, $data->{opts};
+        push @$result, $row;
+    }
+
+    return $result;
 }
 
 sub _init_summary {
@@ -435,7 +509,7 @@ inside foo.pl:
      ],
      command_struct => {
         get => {
-            options    => [
+            options     => [
                 [ [qw/d dir/], 'dest dir', '=s', undef, { default => '.' } ],
                 [ [qw/o output/], 'output file name', '=s', undef, { required => 1 }],
             ],
@@ -518,9 +592,27 @@ In addition, extended to other values can be set.
   use Getopt::Compact::WithCmd;
   my $go = Getopt::Compact::WithCmd->new(
       global_struct => [
-          [ $name_spec_arrayref, $description_scalar, $argument_spec_scalar, \$destination_scalar, $opt_hashref],
+          [ $name_spec_arrayref, $description_scalar, $argument_spec_scalar, \$destination_scalar, $opt_hashref ],
           [ ... ]
       ],
+  );
+
+And you can also write in hash style.
+
+  use Getopt::Compact::WithCmd;
+  my $go = Getopt::Compact::WithCmd->new(
+      global_struct => {
+          $name_scalar => {
+              alias => $name_spec_arrayref,
+              desc  => $description_scalar,
+              type  => $argument_spec_scalar,
+              dest  => \$destination_scalar,
+              opts  => $opt_hashref,
+          },
+          $other_name_scalar => {
+              ...
+          },
+      },
   );
 
 I<$opt_hasref> are:
