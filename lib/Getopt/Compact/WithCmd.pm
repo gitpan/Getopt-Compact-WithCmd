@@ -8,7 +8,7 @@ use List::Util qw(max);
 use Getopt::Long qw/GetOptionsFromArray/;
 use constant DEFAULT_CONFIG => (no_auto_abbrev => 1, bundling => 1);
 
-our $VERSION = '0.16';
+our $VERSION = '0.17';
 
 sub new {
     my ($class, %args) = @_;
@@ -37,29 +37,25 @@ sub new {
 
     $self->_init_summary($args{command_struct});
 
-    if (my $global_struct = $args{global_struct}) {
-        $self->_init_struct($global_struct);
-        my $opthash = $self->_parse_struct || return $self;
-
-        if ($args{command_struct}) {
-            if (my @gopts = $self->_parse_argv) {
-                $self->{ret} = $self->_parse_option(\@gopts, $opthash);
-                return $self unless $self->{ret};
-                return $self if $self->_want_help;
-            }
-            $self->_check_requires;
-        }
-        else {
-            $self->{ret} = $self->_parse_option(\@ARGV, $opthash);
+    $self->_init_struct($args{global_struct} || []);
+    my $opthash = $self->_parse_struct || return $self;
+    if ($args{command_struct}) {
+        if (my @gopts = $self->_parse_argv) {
+            $self->{ret} = $self->_parse_option(\@gopts, $opthash);
             return $self unless $self->{ret};
             return $self if $self->_want_help;
-            $self->_check_requires;
-            return $self;
         }
+        $self->_check_requires;
+    }
+    else {
+        $self->{ret} = $self->_parse_option(\@ARGV, $opthash);
+        return $self unless $self->{ret};
+        return $self if $self->_want_help;
+        $self->_check_requires;
+        return $self;
     }
 
     $self->_parse_command_struct($args{command_struct});
-
     return $self;
 }
 
@@ -410,7 +406,6 @@ sub _init_struct {
         my @modeopt;
         for my $m (@{$self->{modes}}) {
             my($mc) = $m =~ /^(\w)/;
-            $mc = 'n' if $m eq 'test';
             push @modeopt, [[$mc, $m], qq($m mode)];
         }
         unshift @$struct, @modeopt;
