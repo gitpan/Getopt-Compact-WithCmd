@@ -8,7 +8,7 @@ use List::Util qw(max);
 use Getopt::Long qw/GetOptionsFromArray/;
 use constant DEFAULT_CONFIG => (no_auto_abbrev => 1, bundling => 1);
 
-our $VERSION = '0.17';
+our $VERSION = '0.18';
 
 sub new {
     my ($class, %args) = @_;
@@ -65,7 +65,7 @@ sub new_from_array {
         require Carp;
         Carp::croak("Usage: $class->new_from_array(\\\@args, %options)");
     }
-    local @ARGV = @$args;
+    local *ARGV = $args;
     return $class->new(%options);
 }
 
