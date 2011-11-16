@@ -5,10 +5,22 @@ use warnings;
 use 5.008_001;
 use Data::Dumper ();
 use List::Util qw(max);
-use Getopt::Long qw/GetOptionsFromArray/;
+use Getopt::Long qw(GetOptionsFromArray);
+use Carp ();
 use constant DEFAULT_CONFIG => (no_auto_abbrev => 1, bundling => 1);
 
-our $VERSION = '0.18';
+our $VERSION = '0.19';
+
+my $TYPE_MAP = {
+    'Bool'   => '!',
+    'Incr'   => '+',
+    'Str'    => '=s',
+    'Int'    => '=i',
+    'Num'    => '=f',
+    'ExNum'  => '=o',
+};
+
+my $TYPE_GEN = {};
 
 sub new {
     my ($class, %args) = @_;
@@ -62,18 +74,30 @@ sub new {
 sub new_from_array {
     my ($class, $args, %options) = @_;
     unless (ref $args eq 'ARRAY') {
-        require Carp;
         Carp::croak("Usage: $class->new_from_array(\\\@args, %options)");
     }
     local *ARGV = $args;
     return $class->new(%options);
 }
 
-sub command    { $_[0]->{command}  }
-sub commands   { $_[0]->{commands} }
-sub status     { $_[0]->{ret}      }
-sub is_success { $_[0]->{ret}      }
-sub pod2usage  { require Carp; Carp::carp('Not implemented') }
+sub new_from_string {
+    my ($class, $str, %options) = @_;
+    unless (defined $str) {
+        Carp::croak("Usage: $class->new_from_string(\$str, %options)");
+    }
+    require Text::ParseWords;
+    my $args = [Text::ParseWords::shellwords($str)];
+    local *ARGV = $args;
+    return $class->new(%options);
+}
+
+sub args       { $_[0]->{_argv}     }
+sub error      { $_[0]->{error}||'' }
+sub command    { $_[0]->{command}   }
+sub commands   { $_[0]->{commands}  }
+sub status     { $_[0]->{ret}       }
+sub is_success { $_[0]->{ret}       }
+sub pod2usage  { Carp::carp('Not implemented') }
 
 sub opts {
     my($self) = @_;
@@ -149,7 +173,7 @@ sub usage {
             local $Data::Dumper::Indent = 0;
             local $Data::Dumper::Terse  = 1;
             my $info = [];
-            push @$info, $arg_spec                ? $self->_opt_spec2name($arg_spec): '';
+            push @$info, $self->_opt_spec2name($arg_spec) || $arg_spec || '';
             push @$info, $opts->{required}        ? "(required)" : '';
             push @$info, defined $opts->{default} ? "(default: ".Data::Dumper::Dumper($opts->{default}).")" : '';
             $info;
@@ -200,18 +224,19 @@ sub show_usage {
 sub _opt_spec2name {
     my ($self, $spec) = @_;
     my $name = '';
+    return $name unless defined $spec;
     my ($type, $dest) = $spec =~ /^[=:]?([!+isof])([@%])?/;
     if ($type) {
         $name =
-            $type eq '!' ? 'Bool'   :
-            $type eq '+' ? 'Incr'   :
-            $type eq 's' ? 'Str'    :
-            $type eq 'i' ? 'Int'    :
-            $type eq 'o' ? 'ExtInt' :
-            $type eq 'f' ? 'Number' : '';
+            $type eq '!' ? 'Bool'  :
+            $type eq '+' ? 'Incr'  :
+            $type eq 's' ? 'Str'   :
+            $type eq 'i' ? 'Int'   :
+            $type eq 'f' ? 'Num'   :
+            $type eq 'o' ? 'ExNum' : '';
     }
     if ($dest) {
-        $name .= $dest eq '@' ? ':Array' : $dest eq '%' ? ':Hash' : '';
+        $name = $dest eq '@' ? "Array[$name]" : $dest eq '%' ? "Hash[$name]" : $name;
     }
     return $name;
 }
@@ -353,9 +378,90 @@ sub _parse_struct {
         my($m, $descr, $spec, $ref, $opts) = @$s;
         my @onames = $self->_option_names($m);
         my($longname) = grep length($_) > 1, @onames;
-        my $o = join('|', @onames).($spec || '');
+        my ($type, $cb) = $self->_compile_spec($spec);
+        my $o = join('|', @onames).($type||'');
         my $dest = $longname ? $longname : $onames[0];
         $opts ||= {};
+        my $destination;
+        if (ref $cb eq 'CODE') {
+            my $t =
+                substr($type, -1, 1) eq '@' ? 'Array' :
+                substr($type, -1, 1) eq '%' ? 'Hash'  : '';
+            if (ref $ref eq 'CODE') {
+                $destination = sub { $ref->($_[0], $cb->($_[1])) };
+            }
+            elsif (ref $ref) {
+                if (ref $ref eq 'SCALAR' || ref $ref eq 'REF') {
+                    $$ref = $t eq 'Array' ? [] : $t eq 'Hash' ? {} : undef;
+                }
+                elsif (ref $ref eq 'ARRAY') {
+                    @$ref = ();
+                }
+                elsif (ref $ref eq 'HASH') {
+                    %$ref = ();
+                }
+                $destination = sub {
+                    if ($t eq 'Array') {
+                        if (ref $ref eq 'SCALAR' || ref $ref eq 'REF') {
+                            push @{$$ref}, scalar $cb->($_[1]);
+                        }
+                        elsif (ref $ref eq 'ARRAY') {
+                            push @$ref, scalar $cb->($_[1]);
+                        }
+                        elsif (ref $ref eq 'HASH') {
+                            my @kv = split '=', $_[1], 2;
+                            die qq(Option $_[0], key "$_[1]", requires a value\n)
+                                unless @kv == 2;
+                            $ref->{$kv[0]} = scalar $cb->($kv[1]);
+                        }
+                    }
+                    elsif ($t eq 'Hash') {
+                        if (ref $ref eq 'SCALAR' || ref $ref eq 'REF') {
+                            $$ref->{$_[1]} = scalar $cb->($_[2]);
+                        }
+                        elsif (ref $ref eq 'ARRAY') {
+                            # XXX but Getopt::Long is $ret = join '=', $_[1], $_[2];
+                            push @$ref, $_[1], scalar $cb->($_[2]);
+                        }
+                        elsif (ref $ref eq 'HASH') {
+                            $ref->{$_[1]} = scalar $cb->($_[2]);
+                        }
+                    }
+                    else {
+                        if (ref $ref eq 'SCALAR' || ref $ref eq 'REF') {
+                            $$ref = $cb->($_[1]);
+                        }
+                        elsif (ref $ref eq 'ARRAY') {
+                            @$ref = (scalar $cb->($_[1]));
+                        }
+                        elsif (ref $ref eq 'HASH') {
+                            my @kv = split '=', $_[1], 2;
+                            die qq(Option $_[0], key "$_[1]", requires a value\n)
+                                unless @kv == 2;
+                            %$ref = ($kv[0] => scalar $cb->($kv[1]));
+                        }
+                    }
+                };
+            }
+            else {
+                $destination = sub {
+                    if ($t eq 'Array') {
+                        $self->{opt}{$dest} ||= [];
+                        push @{$self->{opt}{$dest}}, scalar $cb->($_[1]);
+                    }
+                    elsif ($t eq 'Hash') {
+                        $self->{opt}{$dest} ||= {};
+                        $self->{opt}{$dest}{$_[1]} = $cb->($_[2]);
+                    }
+                    else {
+                        $self->{opt}{$dest} = $cb->($_[1]);
+                    }
+                };
+            }
+        }
+        else {
+            $destination = ref $ref ? $ref : \$self->{opt}{$dest};
+        }
         if (exists $opts->{default}) {
             my $value = $opts->{default};
             if (ref $value eq 'ARRAY') {
@@ -383,9 +489,9 @@ sub _parse_struct {
                 $self->{error} = "Invalid default option for $dest";
                 $self->{ret} = 0;
             }
-            $default_opthash->{$o} = ref $ref ? $ref : \$self->{opt}{$dest};
+            $default_opthash->{$o} = $destination;
         }
-        $opthash->{$o} = ref $ref ? $ref : \$self->{opt}{$dest};
+        $opthash->{$o} = $destination;
         $self->{requires}{$dest} = $o if $opts->{required};
     }
 
@@ -423,7 +529,11 @@ sub _normalize_struct {
         my $data = $struct->{$option} || {};
         $data = ref $data eq 'HASH' ? $data : {};
         my $row = [];
-        push @$row, [$option, ref $data->{alias} ? @{$data->{alias}} : ()];
+        push @$row, [
+            $option,
+            ref $data->{alias} eq 'ARRAY' ? @{$data->{alias}} :
+            defined $data->{alias}        ? $data->{alias}    :  (),
+        ];
         push @$row, $data->{desc};
         push @$row, $data->{type};
         push @$row, $data->{dest};
@@ -432,6 +542,37 @@ sub _normalize_struct {
     }
 
     return $result;
+}
+
+sub _compile_spec {
+    my ($self, $spec) = @_;
+    return if !defined $spec or $spec eq '';
+    return $spec if $self->_opt_spec2name($spec);
+    my ($type, $cb);
+    if ($spec =~ /^(Array|Hash)\[(\w+)\]$/) {
+        $type  = $TYPE_MAP->{$2} || Carp::croak("Can't find type constraint '$2'");
+        $type .= $1 eq 'Array' ? '@' : '%';
+        $cb    = $TYPE_GEN->{$2};
+    }
+    elsif ($type = $TYPE_MAP->{$spec}) {
+        $cb = $TYPE_GEN->{$spec};
+    }
+    else {
+        Carp::croak("Can't find type constraint '$spec'");
+    }
+    return $type, $cb;
+}
+
+sub add_type {
+    my ($class, $name, $src_type, $cb) = @_;
+    unless (defined $name && $src_type && ref $cb eq 'CODE') {
+        Carp::croak("Usage: $class->add_type(\$name, \$src_type, \$cb)");
+    }
+    unless ($TYPE_MAP->{$src_type}) {
+        Carp::croak("$src_type is not defined src type");
+    }
+    $TYPE_MAP->{$name} = $TYPE_MAP->{$src_type};
+    $TYPE_GEN->{$name} = $cb;
 }
 
 sub _init_summary {
@@ -615,6 +756,22 @@ And you can also write in hash style.
       },
   );
 
+I<$argument_spec_scalar> can be set value are L<< Getopt::Long >>'s option specifications.
+And you can also specify the following readable style:
+
+  Bool     # eq !
+  Incr     # eq +
+  Str      # eq =s
+  Int      # eq =i
+  Num      # eq =f
+  ExNum    # eq =o
+
+In addition, Array and Hash type are:
+
+  Array[Str] # eq =s@
+  Hash[Int]  # eq =i%
+  ...
+
 I<$opt_hasref> are:
 
   {
@@ -682,11 +839,44 @@ support nesting.
 
 =back
 
+=head2 add_type($new_type, $src_type, $code_ref);
+
+This method is additional your own type.
+You must be call before new() method.
+
+  use JSON;
+  use Data::Dumper;
+
+  Getopt::Compact::WithCmd->add_type(JSON => Str => sub { decode_json(shift) });
+  my $go = Getopt::Compact::WithCmd->new(
+      global_struct => {
+          from_json => {
+              type => 'JSON',
+          },
+      },
+  );
+  my $data = $go->opts->{from_json};
+  print Dumper $data;
+
+  # will run cmd:
+  $ ./add_type.pl --from_json '{"foo":"bar"}'
+  $VAR1 = {
+            'foo' => 'bar'
+          };
+
 =head2 new_from_array(\@myopts, %args);
 
-C<new_from_array> can be used to parse options from an arbitrary array.
+C<< new_from_array >> can be used to parse options from an arbitrary array.
 
-  $go = Getopt::Compact::With->new_from_array(\@myopts, ...);
+  $go = Getopt::Compact::WithCmd->new_from_array(\@myopts, ...);
+
+=head2 new_from_string($option_string, %args);
+
+C<< new_from_string >> can be used to parts options from an arbitrary string.
+
+This method using L<< Text::ParseWords >> on internal.
+
+  $go = Getopt::Compact::WithCmd->new_from_string('--foo bar baz', ...);
 
 =head2 opts
 
@@ -760,6 +950,18 @@ Display usage message and exit.
 
   $go->show_usage;
   $go->show_usage($target_command_name);
+
+=head2 error
+
+Return value is an error message or empty string.
+
+  $go->error;
+
+=head2 args
+
+Return value is array reference to any remaining arguments.
+
+  $go->args # like \@ARGV
 
 =head2 pod2usage
 
