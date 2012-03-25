@@ -358,6 +358,60 @@ test_new(
     args => {
         usage => 0,
         global_struct => [
+            [ [qw/f foo/], 'foo', '=i' ],
+            [ [qw/b bar/], 'bar' ],
+        ],
+    },
+    expects => {
+        usage => 0,
+        struct => [
+            [ [qw/f foo/], 'foo', '=i' ],
+            [ [qw/b bar/], 'bar' ],
+        ],
+        requires => {},
+        opt => {
+            foo => 100,
+            bar => 1,
+        },
+        error => undef,
+        ret => 1,
+    },
+    argv => [qw/-bf100/],
+    expects_argv => [],
+    desc => 'with global_struct / allow argv -bf100 (enabled bundling)',
+);
+
+test_new(
+    args => {
+        usage => 0,
+        global_struct => [
+            [ [qw/i index/], 'index', '=i' ],
+            [ [qw/I interval/], 'interval', '=i' ],
+        ],
+    },
+    expects => {
+        usage => 0,
+        struct => [
+            [ [qw/i index/], 'index', '=i' ],
+            [ [qw/I interval/], 'interval', '=i' ],
+        ],
+        requires => {},
+        opt => {
+            index    => 100,
+            interval => undef,
+        },
+        error => undef,
+        ret => 1,
+    },
+    argv => [qw/-i 100/],
+    expects_argv => [],
+    desc => 'with global_struct / default case sensitive',
+);
+
+test_new(
+    args => {
+        usage => 0,
+        global_struct => [
             [ [qw/f foo/], 'foo', '=s', undef, { required => 1 } ],
         ],
     },
